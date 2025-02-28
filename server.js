@@ -44,8 +44,9 @@ async function createVariant(product_id, width, height, material, price) {
         variant: {
             option1: `${width}x${height} - ${material}`,
             price: price.toFixed(2),
-            inventory_management: "shopify",
-            inventory_policy: "deny"
+            inventory_management: null,  // ✅ Prevents Shopify from requiring stock
+            inventory_policy: "continue", // ✅ Allows purchase even if out of stock
+            fulfillment_service: "manual" // ✅ Ensures Shopify handles fulfillment
         }
     };
 
