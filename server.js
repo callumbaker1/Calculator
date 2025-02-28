@@ -12,7 +12,7 @@ app.use(cors());
 // Shopify API Credentials
 const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
-const SHOPIFY_API_URL = `https://${SHOPIFY_STORE}/admin/api/2024-01`;
+const SHOPIFY_API_URL = `https://${SHOPIFY_STORE}/admin/api/2025-01`;
 
 // 🔹 Function to Calculate Price Based on User Selections
 function calculateCustomPrice(width, height, material) {
