@@ -89,10 +89,7 @@ app.post("/create-variant", async (req, res) => {
 
         // 🔹 Try Adding to Cart
         try {
-            const cartData = { items: [{ id: variant.id, quantity: 1 }] };
-            await axios.post(`https://${SHOPIFY_STORE}/cart/add.js`, cartData, {
-                headers: { "Content-Type": "application/json" }
-            });
+
 
             console.log("Variant successfully added to cart!");
             res.json({ success: true, variant_id: variant.id });
