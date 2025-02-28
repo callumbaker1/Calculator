@@ -62,6 +62,28 @@ async function createVariant(product_id, width, height, material, price) {
     }
 }
 
+async function forceShopifyToUpdate(product_id) {
+    console.log("🔄 Forcing Shopify to refresh product data...");
+
+    try {
+        let updateResponse = await fetch(`https://your-shopify-store.myshopify.com/admin/api/2024-01/products/${product_id}.json`, {
+            method: "PUT",
+            headers: {
+                "Content-Type": "application/json",
+                "X-Shopify-Access-Token": process.env.SHOPIFY_ACCESS_TOKEN
+            },
+            body: JSON.stringify({
+                product: { id: product_id }
+            })
+        });
+
+        let updateData = await updateResponse.json();
+        console.log("✅ Shopify product refreshed:", updateData);
+    } catch (error) {
+        console.error("❌ Error forcing Shopify product refresh:", error);
+    }
+}
+
 // 🔹 API Endpoint: Create or Find Variant, Then Add to Cart
 app.post("/create-variant", async (req, res) => {
     try {
