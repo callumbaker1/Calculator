@@ -65,31 +65,34 @@ async function createVariant(product_id, width, height, material, price) {
 app.post("/create-variant", async (req, res) => {
     try {
         const { width, height, material, product_id } = req.body;
+        console.log("Received request:", req.body);
+
         let price = calculateCustomPrice(width, height, material);
+        console.log("Calculated price:", price);
 
         let variant = await findVariant(product_id, `${width}x${height} - ${material}`);
-        
+        console.log("Existing variant found?", variant ? "Yes" : "No");
+
         if (!variant) {
             variant = await createVariant(product_id, width, height, material, price);
+            console.log("Created new variant:", variant);
         }
 
         if (!variant) {
+            console.error("Failed to create variant");
             return res.status(500).json({ error: "Failed to create variant" });
         }
 
-        // Add Variant to Cart
-        const cartData = {
-            items: [{ id: variant.id, quantity: 1 }]
-        };
-
+        // Add Variant to Shopify Cart
+        const cartData = { items: [{ id: variant.id, quantity: 1 }] };
         await axios.post(`https://${SHOPIFY_STORE}/cart/add.js`, cartData, {
             headers: { "Content-Type": "application/json" }
         });
 
         res.json({ success: true, variant_id: variant.id });
     } catch (error) {
-        console.error("Error in /create-variant:", error);
-        res.status(500).json({ error: "Internal Server Error" });
+        console.error("Error in /create-variant:", error.response?.data || error.message);
+        res.status(500).json({ error: "Internal Server Error", details: error.message });
     }
 });
 
