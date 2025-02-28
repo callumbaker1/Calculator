@@ -74,22 +74,32 @@ app.post("/create-variant", async (req, res) => {
         console.log("Existing variant found?", variant ? "Yes" : "No");
 
         if (!variant) {
+            console.log("Creating a new variant...");
             variant = await createVariant(product_id, width, height, material, price);
-            console.log("Created new variant:", variant);
+            console.log("Variant created:", variant);
         }
 
-        if (!variant) {
-            console.error("Failed to create variant");
-            return res.status(500).json({ error: "Failed to create variant" });
+        // 🔹 FIX: If variant was created but no response, log it
+        if (!variant || !variant.id) {
+            console.error("Failed to retrieve variant ID from Shopify response.");
+            return res.status(500).json({ error: "Variant created but response is missing ID" });
         }
 
-        // Add Variant to Shopify Cart
-        const cartData = { items: [{ id: variant.id, quantity: 1 }] };
-        await axios.post(`https://${SHOPIFY_STORE}/cart/add.js`, cartData, {
-            headers: { "Content-Type": "application/json" }
-        });
+        console.log("Variant ID:", variant.id);
 
-        res.json({ success: true, variant_id: variant.id });
+        // 🔹 Try Adding to Cart
+        try {
+            const cartData = { items: [{ id: variant.id, quantity: 1 }] };
+            await axios.post(`https://${SHOPIFY_STORE}/cart/add.js`, cartData, {
+                headers: { "Content-Type": "application/json" }
+            });
+
+            console.log("Variant successfully added to cart!");
+            res.json({ success: true, variant_id: variant.id });
+        } catch (cartError) {
+            console.error("Failed to add variant to cart:", cartError.response?.data || cartError.message);
+            res.status(500).json({ error: "Variant created but failed to add to cart" });
+        }
     } catch (error) {
         console.error("Error in /create-variant:", error.response?.data || error.message);
         res.status(500).json({ error: "Internal Server Error", details: error.message });
