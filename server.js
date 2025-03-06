@@ -23,6 +23,31 @@ function calculateCustomPrice(width, height, material) {
     return (area * basePricePerCm2) + materialCost;
 }
 
+// Function to Find an Existing Variant
+async function findExistingVariant(product_id, width, height, material) {
+    try {
+        const response = await axios.get(`${SHOPIFY_API_URL}/products/${product_id}/variants.json`, {
+            headers: { "X-Shopify-Access-Token": ACCESS_TOKEN }
+        });
+
+        let variants = response.data.variants;
+        let variantTitle = `${width}x${height} - ${material}`;
+
+        let existingVariant = variants.find(v => v.option1 === variantTitle);
+
+        if (existingVariant) {
+            console.log("✅ Existing Variant Found:", existingVariant.id);
+            return existingVariant;
+        } else {
+            console.log("❌ No existing variant found, creating a new one.");
+            return null;
+        }
+    } catch (error) {
+        console.error("❌ Error finding variant:", error.response?.data || error.message);
+        return null;
+    }
+}
+
 // Function to Create a Metafield for a Variant
 async function createMetafield(variant_id, price) {
     try {
@@ -43,7 +68,7 @@ async function createMetafield(variant_id, price) {
     }
 }
 
-// Function to Create a Variant and Attach Metafield
+// Function to Create a Variant
 async function createVariant(product_id, width, height, material, price) {
     const variantData = {
         variant: {
@@ -73,15 +98,21 @@ async function createVariant(product_id, width, height, material, price) {
     }
 }
 
-// API Endpoint to Create Variant
+// API Endpoint to Create Variant or Use Existing One
 app.post("/create-variant", async (req, res) => {
     try {
         const { width, height, material, product_id } = req.body;
         let price = calculateCustomPrice(width, height, material);
 
-        let variant = await createVariant(product_id, width, height, material, price);
+        // Check if the variant already exists
+        let variant = await findExistingVariant(product_id, width, height, material);
+
+        if (!variant) {
+            variant = await createVariant(product_id, width, height, material, price);
+        }
+
         if (!variant || !variant.id) {
-            return res.status(500).json({ error: "Failed to create variant" });
+            return res.status(500).json({ error: "Failed to create or find variant" });
         }
 
         res.json({ success: true, variant_id: variant.id });
