@@ -23,14 +23,48 @@ function calculateCustomPrice(width, height, material) {
     return (area * basePricePerCm2) + materialCost;
 }
 
-// Function to Find an Existing Variant
-async function findExistingVariant(product_id, width, height, material) {
+// Function to Get All Variants
+async function getVariants(product_id) {
     try {
         const response = await axios.get(`${SHOPIFY_API_URL}/products/${product_id}/variants.json`, {
             headers: { "X-Shopify-Access-Token": ACCESS_TOKEN }
         });
+        return response.data.variants;
+    } catch (error) {
+        console.error("❌ Error fetching variants:", error.response?.data || error.message);
+        return [];
+    }
+}
 
-        let variants = response.data.variants;
+// Function to Delete the Oldest Variant
+async function deleteOldestVariant(product_id) {
+    try {
+        let variants = await getVariants(product_id);
+
+        if (variants.length >= 100) {
+            // Sort by `created_at` (oldest first)
+            let oldestVariant = variants.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0];
+
+            console.log(`⚠️ Deleting oldest variant: ${oldestVariant.id}`);
+            await axios.delete(`${SHOPIFY_API_URL}/variants/${oldestVariant.id}.json`, {
+                headers: { "X-Shopify-Access-Token": ACCESS_TOKEN }
+            });
+
+            console.log(`✅ Deleted variant ${oldestVariant.id}`);
+            return true;
+        }
+
+        return false;
+    } catch (error) {
+        console.error("❌ Error deleting oldest variant:", error.response?.data || error.message);
+        return false;
+    }
+}
+
+// Function to Find an Existing Variant
+async function findExistingVariant(product_id, width, height, material) {
+    try {
+        let variants = await getVariants(product_id);
         let variantTitle = `${width}x${height} - ${material}`;
 
         let existingVariant = variants.find(v => v.option1 === variantTitle);
@@ -51,7 +85,7 @@ async function findExistingVariant(product_id, width, height, material) {
 // Function to Create a Metafield for a Variant
 async function createMetafield(variant_id, price) {
     try {
-        const response = await axios.post(`${SHOPIFY_API_URL}/variants/${variant_id}/metafields.json`, {
+        await axios.post(`${SHOPIFY_API_URL}/variants/${variant_id}/metafields.json`, {
             metafield: {
                 namespace: "custom",
                 key: "dynamic_price",
@@ -62,7 +96,7 @@ async function createMetafield(variant_id, price) {
             headers: { "X-Shopify-Access-Token": ACCESS_TOKEN, "Content-Type": "application/json" }
         });
 
-        console.log("✅ Metafield Created:", response.data.metafield);
+        console.log("✅ Metafield Created");
     } catch (error) {
         console.error("❌ Error creating metafield:", error.response?.data || error.message);
     }
@@ -107,7 +141,15 @@ app.post("/create-variant", async (req, res) => {
         // Check if the variant already exists
         let variant = await findExistingVariant(product_id, width, height, material);
 
+        // If variant does NOT exist, check variant count
         if (!variant) {
+            let variants = await getVariants(product_id);
+            if (variants.length >= 100) {
+                console.log("⚠️ Maximum variants reached. Deleting the oldest variant...");
+                await deleteOldestVariant(product_id);
+            }
+
+            // Now create a new variant
             variant = await createVariant(product_id, width, height, material, price);
         }
 
