@@ -22,7 +22,7 @@ app.use(cors({
     credentials: true
 }));
 
-// ✅ Manually set CORS headers for preflight requests (important for Shopify)
+// ✅ Manually set CORS headers for preflight requests
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "https://www.tagshop.co.uk");
     res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -73,19 +73,20 @@ async function findExistingVariant(product_id, width, height, material) {
     }
 }
 
-// 🔹 Function to Delete the Oldest Variant if Limit is Reached
-async function deleteOldestVariant(product_id) {
-    try {
-        let variants = await getAllVariants(product_id);
-        if (variants.length >= 100) {
-            let oldestVariant = variants[0]; // The first variant is usually the oldest
+// 🔹 Function to Delete the Oldest Variant **Before** Creating a New One
+async function ensureVariantLimit(product_id) {
+    let variants = await getAllVariants(product_id);
+
+    if (variants.length >= 100) {
+        let oldestVariant = variants[0]; // The first variant is usually the oldest
+        try {
             await axios.delete(`${SHOPIFY_API_URL}/products/${product_id}/variants/${oldestVariant.id}.json`, {
                 headers: { "X-Shopify-Access-Token": ACCESS_TOKEN }
             });
             console.log("🗑️ Deleted oldest variant:", oldestVariant.id);
+        } catch (error) {
+            console.error("❌ Error deleting variant:", error.response?.data || error.message);
         }
-    } catch (error) {
-        console.error("❌ Error deleting variant:", error.response?.data || error.message);
     }
 }
 
@@ -111,7 +112,7 @@ async function createMetafield(variant_id, price) {
 
 // 🔹 Function to Create a Variant
 async function createVariant(product_id, width, height, material, price) {
-    await deleteOldestVariant(product_id); // Check variant limit before creating new one
+    await ensureVariantLimit(product_id); // Ensure Shopify allows variant creation
 
     const variantData = {
         variant: {
@@ -125,7 +126,7 @@ async function createVariant(product_id, width, height, material, price) {
 
     try {
         const response = await axios.post(`${SHOPIFY_API_URL}/products/${product_id}/variants.json`, variantData, {
-            headers: { "X-Shopify-Access-Token": ACCESS_TOKEN, "Content-Type": "application/json" }
+            headers: { "X-Shopify-Access-Token": ACCESS_TOKEN }
         });
 
         let variant = response.data.variant;
