@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// ✅ Allow only your Shopify store (replace with your actual store domain)
+// ✅ Allow only your Shopify store (update with your store domain)
 const allowedOrigins = ["https://www.tagshop.co.uk"];
 
 app.use(cors({
@@ -22,7 +22,7 @@ app.use(cors({
     credentials: true
 }));
 
-// ✅ Manually set CORS headers for preflight requests (fixes OPTIONS request issue)
+// ✅ Manually set CORS headers for preflight requests (important for Shopify)
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "https://www.tagshop.co.uk");
     res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -54,7 +54,7 @@ async function getAllVariants(product_id) {
         const response = await axios.get(`${SHOPIFY_API_URL}/products/${product_id}/variants.json`, {
             headers: { "X-Shopify-Access-Token": ACCESS_TOKEN }
         });
-        return response.data.variants;
+        return response.data.variants || [];
     } catch (error) {
         console.error("❌ Error fetching variants:", error.response?.data || error.message);
         return [];
@@ -89,6 +89,26 @@ async function deleteOldestVariant(product_id) {
     }
 }
 
+// 🔹 Function to Create a Metafield for a Variant
+async function createMetafield(variant_id, price) {
+    try {
+        const response = await axios.post(`${SHOPIFY_API_URL}/variants/${variant_id}/metafields.json`, {
+            metafield: {
+                namespace: "custom",
+                key: "dynamic_price",
+                value: price.toFixed(2),
+                type: "string"
+            }
+        }, {
+            headers: { "X-Shopify-Access-Token": ACCESS_TOKEN, "Content-Type": "application/json" }
+        });
+
+        console.log("✅ Metafield Created:", response.data.metafield);
+    } catch (error) {
+        console.error("❌ Error creating metafield:", error.response?.data || error.message);
+    }
+}
+
 // 🔹 Function to Create a Variant
 async function createVariant(product_id, width, height, material, price) {
     await deleteOldestVariant(product_id); // Check variant limit before creating new one
@@ -105,11 +125,14 @@ async function createVariant(product_id, width, height, material, price) {
 
     try {
         const response = await axios.post(`${SHOPIFY_API_URL}/products/${product_id}/variants.json`, variantData, {
-            headers: { "X-Shopify-Access-Token": ACCESS_TOKEN }
+            headers: { "X-Shopify-Access-Token": ACCESS_TOKEN, "Content-Type": "application/json" }
         });
 
         let variant = response.data.variant;
         console.log("✅ Variant Created:", variant.id);
+
+        // Attach a Metafield to the Variant
+        await createMetafield(variant.id, price);
 
         return variant;
     } catch (error) {
@@ -140,6 +163,11 @@ app.post("/create-variant", async (req, res) => {
         console.error("❌ Error in /create-variant:", error.response?.data || error.message);
         res.status(500).json({ error: "Internal Server Error", details: error.message });
     }
+});
+
+// ✅ Test Route to Check CORS
+app.get("/test", (req, res) => {
+    res.json({ success: true, message: "CORS is working!" });
 });
 
 // Start Server
