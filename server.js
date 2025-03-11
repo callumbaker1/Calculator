@@ -48,13 +48,35 @@ function calculateCustomPrice(width, height, material) {
     return (area * basePricePerCm2) + materialCost;
 }
 
-// 🔹 Function to Get All Variants of a Product
+// 🔹 Function to Get ALL Variants of a Product (Handles Pagination)
 async function getAllVariants(product_id) {
+    let variants = [];
+    let endpoint = `${SHOPIFY_API_URL}/products/${product_id}/variants.json?limit=50`; // ✅ Fetch first 50
+
     try {
-        const response = await axios.get(`${SHOPIFY_API_URL}/products/${product_id}/variants.json`, {
-            headers: { "X-Shopify-Access-Token": ACCESS_TOKEN }
-        });
-        return response.data.variants || [];
+        while (endpoint) {
+            const response = await axios.get(endpoint, {
+                headers: { "X-Shopify-Access-Token": ACCESS_TOKEN }
+            });
+
+            variants = variants.concat(response.data.variants);
+
+            // ✅ Check for "Link" header (pagination)
+            const linkHeader = response.headers["link"];
+            if (linkHeader && linkHeader.includes('rel="next"')) {
+                let match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+                if (match) {
+                    endpoint = match[1]; // ✅ Set next page URL
+                } else {
+                    endpoint = null;
+                }
+            } else {
+                endpoint = null; // ✅ No more pages
+            }
+        }
+
+        console.log(`✅ Retrieved ${variants.length} variants`);
+        return variants;
     } catch (error) {
         console.error("❌ Error fetching variants:", error.response?.data || error.message);
         return [];
