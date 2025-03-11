@@ -99,6 +99,7 @@ async function findExistingVariant(product_id, width, height, material) {
 }
 
 
+
 // 🔹 Function to Create a Variant
 async function createVariant(product_id, width, height, material, price) {
     ensureVariantLimit(product_id); // ✅ Runs in background (faster)
@@ -121,8 +122,7 @@ async function createVariant(product_id, width, height, material, price) {
         let variant = response.data.variant;
         console.log("✅ Variant Created:", variant.id);
 
-        // Attach a Metafield to the Variant
-        await createMetafield(variant.id, price);
+
 
         return variant;
     } catch (error) {
