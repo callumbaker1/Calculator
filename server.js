@@ -77,17 +77,18 @@ async function findExistingVariant(product_id, width, height, material) {
 async function ensureVariantLimit(product_id) {
     let variants = await getAllVariants(product_id);
 
-    while (variants.length >= 95) {  // ✅ Set max limit to 95 instead of 100
+    if (variants.length >= 95) {  // ✅ Set max limit to 95 instead of 100
         let oldestVariant = variants[0]; // The first variant is usually the oldest
         try {
             await axios.delete(`${SHOPIFY_API_URL}/products/${product_id}/variants/${oldestVariant.id}.json`, {
                 headers: { "X-Shopify-Access-Token": ACCESS_TOKEN }
             });
             console.log("🗑️ Deleted oldest variant:", oldestVariant.id);
-            variants = await getAllVariants(product_id); // Refresh variants list after deletion
+
+            // 🔹 Wait for Shopify to process the deletion before continuing
+            await new Promise(resolve => setTimeout(resolve, 2000)); 
         } catch (error) {
             console.error("❌ Error deleting variant:", error.response?.data || error.message);
-            break; // Stop loop if deletion fails
         }
     }
 }
@@ -114,7 +115,7 @@ async function createMetafield(variant_id, price) {
 
 // 🔹 Function to Create a Variant
 async function createVariant(product_id, width, height, material, price) {
-    await ensureVariantLimit(product_id); // ✅ Ensure Shopify allows variant creation
+    await ensureVariantLimit(product_id); // ✅ Delete before creating
 
     const variantData = {
         variant: {
