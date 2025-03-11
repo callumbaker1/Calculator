@@ -98,7 +98,25 @@ async function findExistingVariant(product_id, width, height, material) {
     }
 }
 
+// 🔹 Function to Create a Metafield for a Variant
+async function createMetafield(variant_id, price) {
+    try {
+        const response = await axios.post(`${SHOPIFY_API_URL}/variants/${variant_id}/metafields.json`, {
+            metafield: {
+                namespace: "custom",
+                key: "dynamic_price",
+                value: price.toFixed(2),
+                type: "string"
+            }
+        }, {
+            headers: { "X-Shopify-Access-Token": ACCESS_TOKEN, "Content-Type": "application/json" }
+        });
 
+        console.log("✅ Metafield Created:", response.data.metafield);
+    } catch (error) {
+        console.error("❌ Error creating metafield:", error.response?.data || error.message);
+    }
+}
 
 // 🔹 Function to Create a Variant
 async function createVariant(product_id, width, height, material, price) {
@@ -122,7 +140,8 @@ async function createVariant(product_id, width, height, material, price) {
         let variant = response.data.variant;
         console.log("✅ Variant Created:", variant.id);
 
-
+        // Attach a Metafield to the Variant
+        await createMetafield(variant.id, price);
 
         return variant;
     } catch (error) {
