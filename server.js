@@ -111,7 +111,7 @@ async function ensureVariantLimit(product_id) {
             console.log(`🗑️ Successfully deleted variant ID: ${oldestVariant.id}`);
             
             // 🔹 Wait for Shopify to process deletion
-            await new Promise(resolve => setTimeout(resolve, 5000)); 
+            await new Promise(resolve => setTimeout(resolve, 0)); 
 
             // 🔹 Refresh variant list
             variants = await getAllVariants(product_id);
