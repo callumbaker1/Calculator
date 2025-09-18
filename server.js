@@ -1,4 +1,4 @@
-// server/index.js
+// index.js
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
@@ -9,19 +9,19 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// --- CORS --------------------------------------------------------------------
+// --- CORS (allow only your storefront) ---
 const allowedOrigins = ["https://www.tagshop.co.uk"];
 app.use(
   cors({
     origin(origin, cb) {
-      if (!origin || allowedOrigins.includes(origin)) cb(null, true);
-      else cb(new Error("Not allowed by CORS"));
+      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      return cb(new Error("Not allowed by CORS"));
     },
     credentials: true,
   })
 );
 
-// Preflight
+// Preflight headers
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "https://www.tagshop.co.uk");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -30,73 +30,105 @@ app.use((req, res, next) => {
   next();
 });
 
-// --- Shopify -----------------------------------------------------------------
+// --- Shopify setup ---
 const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const SHOPIFY_API_URL = `https://${SHOPIFY_STORE}/admin/api/2025-01`;
 
-// --- Pricing (mirror of client price(c)) -------------------------------------
-/**
- * cfg fields expected (all optional; sensible defaults applied):
- *  - w, h: numbers in mm
- *  - qty: integer
- *  - sides: 'single' | 'double'
- *  - holeMM: number (mm)
- *  - corner: 'rounded' | 'square' | 'luggage'
- *  - cornerR: number (mm radius, if rounded)
- *  - cord: 'none' | ...
- *  - supply: 'loose' | 'attached'  (applies only if cord !== 'none')
- */
-function calculatePrice(cfg = {}) {
-  const w = Number(cfg.w) || 85;
-  const h = Number(cfg.h) || 55;
-  const qty = Math.max(0, parseInt(cfg.qty, 10) || 0);
+// ---------------------------------------------------------------------
+// Pricing — must stay identical to the client price(c) function
+// Inputs: millimetres for width/height, qty integer, config object
+// Returns a Number (total £) with an £8.50 minimum floor
+// ---------------------------------------------------------------------
+function calculateCfgPrice({
+  width,        // mm
+  height,       // mm
+  qty = 1,
+  sides = "single",        // 'single' | 'double'
+  holeMM = 5,              // number (mm)
+  corner = "rounded",      // 'rounded' | 'square' | 'luggage'
+  cornerR = 2,             // number (mm)
+  cord = "none",           // 'none' | 'standard' | 'lux' | etc (any non-'none' counts)
+  supply = "loose",        // 'loose' | 'attached'
+}) {
+  if (!qty || qty < 1) return 0;
 
-  if (!qty) {
-    // If qty is missing/0, return the floor right away (matches client behavior of showing £8.50)
-    return 8.5;
-  }
+  // Area in cm² (mm * mm / 100)
+  const areaCm2 = (Number(width) * Number(height)) / 100;
 
-  const sides = cfg.sides || "single";
-  const holeMM = Number(cfg.holeMM) || 5;
-  const corner = cfg.corner || "rounded";
-  const cornerR = Number(cfg.cornerR) || 2;
-  const cord = cfg.cord || "none";
-  const supply = cfg.supply || "loose";
-
-  // Area in cm² (mm² / 100)
-  const areaCm2 = (w * h) / 100;
-
-  // Base unit price scales with area
+  // base unit price scales with area
   let unit = 0.012 * areaCm2;
+  const baseUnit = unit;
 
-  // Double-sided adds 12%
-  if (sides === "double") unit *= 1.12;
-
-  // Larger hole surcharge (7mm+)
-  if (holeMM >= 7) unit += 0.002;
-
-  // Rounded corners add based on radius; luggage flat add
-  if (corner === "rounded") unit += cornerR * 0.0007;
-  if (corner === "luggage") unit += 0.01;
-
-  // Cords & attachment
-  if (cord !== "none") {
-    unit += 0.02;
-    if (supply === "attached") unit += 0.01;
+  // sides
+  let sidesMultApplied = 1;
+  if (sides === "double") {
+    unit *= 1.12;
+    sidesMultApplied = 1.12;
   }
 
-  // Quantity discount tiers
+  // hole surcharge
+  let holeAdd = 0;
+  if (Number(holeMM) >= 7) {
+    holeAdd = 0.002;
+    unit += holeAdd;
+  }
+
+  // corner surcharges
+  let roundedAdd = 0;
+  let luggageAdd = 0;
+  if (corner === "rounded") {
+    roundedAdd = Number(cornerR) * 0.0007;
+    unit += roundedAdd;
+  }
+  if (corner === "luggage") {
+    luggageAdd = 0.01;
+    unit += luggageAdd;
+  }
+
+  // cords & supply
+  let cordAdd = 0;
+  let attachedAdd = 0;
+  if (cord && cord !== "none") {
+    cordAdd = 0.02;
+    unit += cordAdd;
+    if (supply === "attached") {
+      attachedAdd = 0.01;
+      unit += attachedAdd;
+    }
+  }
+
+  // discount tiers
   let disc = 1;
   if (qty >= 250) disc = 0.93;
   if (qty >= 500) disc = 0.88;
   if (qty >= 1000) disc = 0.83;
 
-  const total = unit * qty * disc;
-  return Math.max(total, 8.5);
+  const totalBeforeFloor = unit * qty * disc;
+  const totalAfterFloor = Math.max(totalBeforeFloor, 8.5);
+
+  // server-side breakdown log to confirm parity with client
+  console.log("[Pricing] breakdown:", {
+    "Width (mm)": width,
+    "Height (mm)": height,
+    "Qty": qty,
+    "Area (cm²)": Number(areaCm2.toFixed(2)),
+    "Base unit (per item)": Number(baseUnit.toFixed(4)),
+    "Sides multiplier": sidesMultApplied,
+    "Hole add": holeAdd,
+    "Rounded add": Number(roundedAdd.toFixed(4)),
+    "Luggage add": luggageAdd,
+    "Cord add": cordAdd,
+    "Attached add": attachedAdd,
+    "Discount factor": disc,
+    "Total before floor": Number(totalBeforeFloor.toFixed(2)),
+    "Total after floor (returned)": Number(totalAfterFloor.toFixed(2)),
+  });
+
+  return Number(totalAfterFloor.toFixed(2));
 }
 
-// --- Shopify helpers ---------------------------------------------------------
+// --------- Shopify helpers (unchanged except minor logging) ----------
 async function getOldestVariant(product_id) {
   try {
     const r = await axios.get(
@@ -114,25 +146,26 @@ async function ensureVariantLimit(product_id) {
   try {
     const oldest = await getOldestVariant(product_id);
     if (oldest) {
-      console.log(`⚠️ Deleting oldest variant: ${oldest.id}`);
+      console.log(`⚠️ Deleting oldest variant to stay under limits: ${oldest.id}`);
       await axios.delete(
         `${SHOPIFY_API_URL}/products/${product_id}/variants/${oldest.id}.json`,
         { headers: { "X-Shopify-Access-Token": ACCESS_TOKEN } }
       );
-      console.log(`🗑️ Deleted variant ID: ${oldest.id}`);
+      console.log(`🗑️ Deleted variant ${oldest.id}`);
     }
   } catch (err) {
     console.error("❌ Error deleting variant:", err.response?.data || err.message);
   }
 }
 
-async function findExistingVariant(product_id, title) {
+async function findExistingVariant(product_id, width, height, material) {
   try {
     const r = await axios.get(
       `${SHOPIFY_API_URL}/products/${product_id}/variants.json?limit=100`,
       { headers: { "X-Shopify-Access-Token": ACCESS_TOKEN } }
     );
-    return r.data.variants.find((v) => v.option1 === title) || null;
+    const title = `${width}x${height} - ${material}`;
+    return r.data.variants.find(v => v.option1 === title) || null;
   } catch (err) {
     console.error("❌ Error finding variant:", err.response?.data || err.message);
     return null;
@@ -147,7 +180,7 @@ async function createMetafield(variant_id, price) {
         metafield: {
           namespace: "custom",
           key: "dynamic_price",
-          value: Number(price).toFixed(2),
+          value: price.toFixed(2),
           type: "string",
         },
       },
@@ -158,20 +191,20 @@ async function createMetafield(variant_id, price) {
         },
       }
     );
-    console.log("✅ Metafield created:", r.data.metafield?.id);
+    console.log("✅ Metafield created", r.data.metafield?.id);
   } catch (err) {
     console.error("❌ Error creating metafield:", err.response?.data || err.message);
   }
 }
 
-async function createVariant(product_id, title, price) {
-  // delete oldest in background to keep variant count low
-  ensureVariantLimit(product_id);
+async function createVariant(product_id, width, height, material, price) {
+  // delete oldest asynchronously to keep things snappy
+  ensureVariantLimit(product_id).catch(() => {});
 
-  const variantData = {
+  const payload = {
     variant: {
-      option1: title,
-      price: Number(price).toFixed(2),
+      option1: `${width}x${height} - ${material}`,
+      price: price.toFixed(2),
       inventory_management: null,
       inventory_policy: "continue",
       fulfillment_service: "manual",
@@ -181,13 +214,15 @@ async function createVariant(product_id, title, price) {
   try {
     const r = await axios.post(
       `${SHOPIFY_API_URL}/products/${product_id}/variants.json`,
-      variantData,
+      payload,
       { headers: { "X-Shopify-Access-Token": ACCESS_TOKEN } }
     );
+
     const variant = r.data.variant;
     console.log("✅ Variant created:", variant.id);
 
     await createMetafield(variant.id, price);
+
     return variant;
   } catch (err) {
     console.error("❌ Error creating variant:", err.response?.data || err.message);
@@ -195,78 +230,60 @@ async function createVariant(product_id, title, price) {
   }
 }
 
-// --- API: Create or reuse a variant with new pricing -------------------------
-/**
- * POST /create-variant
- * Body:
- *  {
- *    product_id: string (required)
- *    width: number (mm),
- *    height: number (mm),
- *    material: string,          // for your title display
- *    qty: number,
- *    sides: 'single'|'double',
- *    holeMM: number,
- *    corner: 'rounded'|'square'|'luggage',
- *    cornerR: number,
- *    cord: 'none'|...,
- *    supply: 'loose'|'attached'
- *  }
- */
+// ---------------------------- Routes ---------------------------------
 app.post("/create-variant", async (req, res) => {
   try {
     const {
-      product_id,
       width,
       height,
       material = "standard",
-
-      // optional config to mirror the front-end
-      qty,
-      sides,
-      holeMM,
-      corner,
-      cornerR,
-      cord,
-      supply,
+      product_id,
+      qty = 1,
+      config = {}, // { sides, holeMM, corner, cornerR, cord, supply }
     } = req.body || {};
 
-    if (!product_id) {
-      return res.status(400).json({ success: false, error: "Missing product_id" });
+    // Basic validation
+    if (!product_id || !width || !height) {
+      return res.status(400).json({ success: false, error: "Missing width/height/product_id" });
     }
 
-    // Build cfg for pricing (same shape as the client)
-    const cfg = {
-      w: Number(width),
-      h: Number(height),
-      qty: qty != null ? Number(qty) : 0, // if client forgets to send qty, total will floor to £8.50 (same as client)
-      sides,
-      holeMM,
-      corner,
-      cornerR,
-      cord,
-      supply,
-    };
+    console.log("[/create-variant] Incoming:", {
+      width,
+      height,
+      material,
+      product_id,
+      qty,
+      config,
+    });
 
-    const total = calculatePrice(cfg);
+    const price = calculateCfgPrice({
+      width: Number(width),
+      height: Number(height),
+      qty: Number(qty) || 1,
+      sides: config.sides || "single",
+      holeMM: Number(config.holeMM) || 5,
+      corner: config.corner || "rounded",
+      cornerR: Number(config.cornerR) || 2,
+      cord: config.cord || "none",
+      supply: config.supply || "loose",
+    });
 
-    // Variant title that encodes the spec (keep stable so we can find/reuse)
-    const title = `${cfg.w || 0}x${cfg.h || 0} - ${material}`;
+    console.log("[/create-variant] Calculated price:", price);
 
-    // Try to reuse an existing variant
-    let variant = await findExistingVariant(product_id, title);
+    // Reuse existing variant if the exact size/material already exists
+    let variant = await findExistingVariant(product_id, width, height, material);
     if (!variant) {
-      variant = await createVariant(product_id, title, total);
+      variant = await createVariant(product_id, width, height, material, price);
     }
 
     if (!variant?.id) {
-      return res.status(500).json({ success: false, error: "Failed to create or find variant" });
+      return res.status(500).json({ success: false, error: "Failed to create/find variant" });
     }
 
     return res.json({
       success: true,
       variant_id: variant.id,
-      price: Number(total).toFixed(2), // echo back for debugging
+      price, // echoed for client-side debugging
     });
   } catch (err) {
     console.error("❌ Error in /create-variant:", err.response?.data || err.message);
@@ -274,12 +291,10 @@ app.post("/create-variant", async (req, res) => {
   }
 });
 
-// --- Test route --------------------------------------------------------------
 app.get("/test", (req, res) => {
-  res.json({ success: true, message: "CORS is working!" });
+  res.json({ success: true, message: "CORS OK" });
 });
 
-// --- Boot --------------------------------------------------------------------
 app.listen(PORT, () => {
-  console.log(`🚀 Shopify App running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
