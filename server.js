@@ -41,15 +41,15 @@ const SHOPIFY_API_URL = `https://${SHOPIFY_STORE}/admin/api/2025-01`;
 // Returns a Number (total £) with an £8.50 minimum floor
 // ---------------------------------------------------------------------
 function calculateCfgPrice({
-  width,        // mm
-  height,       // mm
+  width,
+  height,
   qty = 1,
-  sides = "single",        // 'single' | 'double'
-  holeMM = 5,              // number (mm)
-  corner = "rounded",      // 'rounded' | 'square' | 'luggage'
-  cornerR = 2,             // number (mm)
-  cord = "none",           // 'none' | 'standard' | 'lux' | etc (any non-'none' counts)
-  supply = "loose",        // 'loose' | 'attached'
+  sides = "single",
+  holeMM = 5,
+  corner = null,
+  cornerR = null,
+  cord = "none",
+  supply = "loose",
 }) {
   if (!qty || qty < 1) return 0;
 
@@ -260,12 +260,12 @@ app.post("/create-variant", async (req, res) => {
       width: Number(width),
       height: Number(height),
       qty: Number(qty) || 1,
-      sides: config.sides || "single",
-      holeMM: Number(config.holeMM) || 5,
-      corner: config.corner || "rounded",
-      cornerR: Number(config.cornerR) || 2,
-      cord: config.cord || "none",
-      supply: config.supply || "loose",
+      sides: config.sides ?? "single",
+      holeMM: config.holeMM != null ? Number(config.holeMM) : 5,
+      corner: config.corner ?? null,
+      cornerR: config.cornerR != null ? Number(config.cornerR) : null,
+      cord: config.cord ?? "none",
+      supply: config.cordSupply ?? "loose",
     });
 
     console.log("[/create-variant] Calculated price:", price);
