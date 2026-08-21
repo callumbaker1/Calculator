@@ -10,8 +10,12 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// --- CORS (allow only your storefront) ---
-const allowedOrigins = ["https://www.tagshop.co.uk"];
+// --- CORS (allow only your storefronts) ---
+const allowedOrigins = [
+  "https://www.tagshop.co.uk",
+  "https://www.stickershop.co.uk",
+  "https://stickershop1.myshopify.com",
+];
 app.use(
   cors({
     origin(origin, cb) {
@@ -22,16 +26,19 @@ app.use(
   })
 );
 
-// Preflight headers
+// Preflight headers — reflect the actual request origin (must match one we allow)
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "https://www.tagshop.co.uk");
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+  }
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.sendStatus(200);
   next();
 });
 
-// --- Shopify setup ---
+// --- Shopify setup: TagShop ---
 const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const SHOPIFY_API_URL = `https://${SHOPIFY_STORE}/admin/api/2025-01`;
@@ -41,9 +48,22 @@ const SHOPIFY_HEADERS = {
   "Content-Type": "application/json",
 };
 
+// --- Shopify setup: StickerShop (legacy custom app, Basic Auth key/secret) ---
+const STICKER_STORE = process.env.STICKER_SHOPIFY_STORE;
+const STICKER_API_KEY = process.env.STICKER_API_KEY;
+const STICKER_API_SECRET = process.env.STICKER_API_SECRET;
+const STICKER_API_URL = `https://${STICKER_STORE}/admin/api/2023-07`;
+const STICKER_BASIC_AUTH = Buffer.from(`${STICKER_API_KEY}:${STICKER_API_SECRET}`).toString("base64");
+
+const STICKER_HEADERS = {
+  Authorization: `Basic ${STICKER_BASIC_AUTH}`,
+  "Content-Type": "application/json",
+};
+
 // Keep 1 permanent/base variant, allow up to 99 dynamic ones
 const MAX_DYNAMIC_VARIANTS = 99;
 const DYNAMIC_SKU_PREFIX = "TAGCFG-";
+const STICKER_DYNAMIC_SKU_PREFIX = "STKCFG-";
 
 // ---------------------------------------------------------------------
 // Helpers
@@ -243,6 +263,146 @@ function calculateCfgPrice({
 }
 
 // ---------------------------------------------------------------------
+// Sticker pricing — ported exactly from the legacy stickershop.co.uk
+// ProductBuilder-ProductPage.liquid CalcPrice() formula. Rates/percentages
+// come from the product's `custom.sticker_config` metaobject in Shopify
+// (fetched server-side below), never trusted from the client.
+// ---------------------------------------------------------------------
+function calculateStickerPrice({
+  width,
+  height,
+  qty = 1,
+  designs = 1,
+  isCustomShape = false,
+  sqmRate,
+  vatMultiplier,
+  setupCharge = 0,
+  customShapeSurchargePercent = 0,
+  suppliedPricePercent = 0,
+  whiteInkPricePercent = 0,
+  whiteInkSelected = false,
+}) {
+  if (!qty || qty < 1) return 0;
+
+  const w = toNumber(width);
+  const h = toNumber(height);
+  const shapeMultiplier = isCustomShape ? 1 + customShapeSurchargePercent / 100 : 1;
+
+  const form100 =
+    qty * (sqmRate * ((h + 2) * (w + 2) * 0.000001 + 0.005) + 15 + 6.95) * vatMultiplier * shapeMultiplier;
+
+  const qtyPrice = Math.ceil(form100);
+  const priceBeforeExtras = qtyPrice + (toNumber(designs, 1) - 1);
+
+  const suppliedAddon = suppliedPricePercent
+    ? Math.ceil(priceBeforeExtras * suppliedPricePercent)
+    : 0;
+
+  const whiteInkAddon =
+    whiteInkSelected && whiteInkPricePercent
+      ? Math.ceil(priceBeforeExtras * whiteInkPricePercent)
+      : 0;
+
+  const finalTotal = priceBeforeExtras + suppliedAddon + setupCharge + whiteInkAddon + 2;
+
+  console.log("[Sticker pricing] breakdown:", {
+    width: w,
+    height: h,
+    qty,
+    designs,
+    isCustomShape,
+    sqmRate,
+    vatMultiplier,
+    setupCharge,
+    suppliedAddon,
+    whiteInkAddon,
+    finalTotal,
+  });
+
+  return Number(finalTotal.toFixed(2));
+}
+
+// Fetch a product's sticker_config metaobject (with its option lists resolved)
+// via GraphQL, using the StickerShop store's Basic Auth credentials.
+async function fetchStickerConfig(productId) {
+  const gid = `gid://shopify/Product/${productId}`;
+  const query = `
+    query($id: ID!) {
+      product(id: $id) {
+        metafield(namespace: "custom", key: "sticker_config") {
+          value
+          reference {
+            ... on Metaobject {
+              fields {
+                key
+                value
+                references(first: 20) {
+                  nodes {
+                    ... on Metaobject {
+                      id
+                      fields { key value }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+  const res = await axios.post(
+    `${STICKER_API_URL}/graphql.json`,
+    { query, variables: { id: gid } },
+    { headers: STICKER_HEADERS }
+  );
+  if (res.data.errors) {
+    throw new Error(`GraphQL error fetching sticker_config: ${JSON.stringify(res.data.errors)}`);
+  }
+  const ref = res.data.data?.product?.metafield?.reference;
+  if (!ref) return null;
+
+  const config = {};
+  for (const f of ref.fields) {
+    if (f.references) {
+      config[f.key] = f.references.nodes.map((n) => {
+        const opt = {};
+        for (const of of n.fields) opt[of.key] = of.value;
+        return opt;
+      });
+    } else {
+      config[f.key] = f.value;
+    }
+  }
+  return config;
+}
+
+function findOptionRate(options, value) {
+  if (!options || !value) return null;
+  const match = options.find((o) => o.value === value);
+  if (!match) return null;
+  if (match.sqm_rate_override != null) return Number(match.sqm_rate_override);
+  return null;
+}
+
+// For products where the rate depends on TWO selections together (e.g. Paper
+// Foil: colour x finish) rather than a single option's own override.
+function findMatrixRate(matrix, colourValue, finishValue) {
+  if (!matrix || !colourValue || !finishValue) return null;
+  const match = matrix.find(
+    (m) => m.colour_value === colourValue && m.finish_value === finishValue
+  );
+  return match ? Number(match.sqm_rate) : null;
+}
+
+function findOptionPercent(options, value) {
+  if (!options || !value) return null;
+  const match = options.find((o) => o.value === value);
+  if (!match || match.price_percent == null) return null;
+  return Number(match.price_percent);
+}
+
+// ---------------------------------------------------------------------
 // Shopify helpers
 // ---------------------------------------------------------------------
 async function getAllVariants(productId) {
@@ -365,6 +525,118 @@ async function createVariant(productId, { width, height, material, price, config
 }
 
 // ---------------------------------------------------------------------
+// Sticker Shopify helpers (StickerShop store — separate credentials)
+// ---------------------------------------------------------------------
+async function getAllStickerVariants(productId) {
+  try {
+    const r = await axios.get(
+      `${STICKER_API_URL}/products/${productId}/variants.json?limit=250`,
+      { headers: STICKER_HEADERS }
+    );
+    return r.data.variants || [];
+  } catch (err) {
+    console.error("❌ Error fetching sticker variants:", err.response?.data || err.message);
+    return [];
+  }
+}
+
+async function deleteStickerVariant(productId, variantId) {
+  try {
+    await axios.delete(
+      `${STICKER_API_URL}/products/${productId}/variants/${variantId}.json`,
+      { headers: STICKER_HEADERS }
+    );
+    console.log(`🗑️ Deleted sticker variant ${variantId}`);
+  } catch (err) {
+    console.error("❌ Error deleting sticker variant:", err.response?.data || err.message);
+  }
+}
+
+async function ensureStickerVariantCapacity(productId) {
+  const variants = await getAllStickerVariants(productId);
+
+  const dynamicVariants = variants
+    .filter((v) => String(v.sku || "").startsWith(STICKER_DYNAMIC_SKU_PREFIX))
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+  if (dynamicVariants.length < MAX_DYNAMIC_VARIANTS) return;
+
+  const oldestDynamic = dynamicVariants[0];
+  if (!oldestDynamic) return;
+
+  console.log(`⚠️ Deleting oldest dynamic sticker variant to stay under limit: ${oldestDynamic.id}`);
+  await deleteStickerVariant(productId, oldestDynamic.id);
+}
+
+async function createStickerMetafields(variantId, { price, configJson }) {
+  const metafields = [
+    {
+      namespace: "custom",
+      key: "dynamic_price",
+      value: price.toFixed(2),
+      type: "single_line_text_field",
+    },
+    {
+      namespace: "custom",
+      key: "config_json",
+      value: JSON.stringify(configJson),
+      type: "json",
+    },
+  ];
+
+  try {
+    for (const metafield of metafields) {
+      await axios.post(
+        `${STICKER_API_URL}/variants/${variantId}/metafields.json`,
+        { metafield },
+        { headers: STICKER_HEADERS }
+      );
+    }
+    console.log(`✅ Metafields created for sticker variant ${variantId}`);
+  } catch (err) {
+    console.error("❌ Error creating sticker variant metafields:", err.response?.data || err.message);
+  }
+}
+
+async function createStickerVariant(productId, { width, height, shape, price, configJson }) {
+  await ensureStickerVariantCapacity(productId);
+
+  const code = shortCode(6);
+  const sku = `${STICKER_DYNAMIC_SKU_PREFIX}${code}`;
+  const option1 = `${width}x${height}mm - ${shape} - ${code}`;
+
+  const payload = {
+    variant: {
+      option1,
+      sku,
+      price: price.toFixed(2),
+      inventory_management: null,
+      inventory_policy: "continue",
+      fulfillment_service: "manual",
+      taxable: true,
+    },
+  };
+
+  try {
+    const r = await axios.post(
+      `${STICKER_API_URL}/products/${productId}/variants.json`,
+      payload,
+      { headers: STICKER_HEADERS }
+    );
+
+    const variant = r.data.variant;
+    console.log("✅ Sticker variant created:", variant.id, option1, sku);
+
+    await createStickerMetafields(variant.id, { price, configJson });
+
+    return variant;
+  } catch (err) {
+    console.error("❌ Error creating sticker variant:", err.response?.data || err.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------
 app.post("/create-variant", async (req, res) => {
@@ -445,6 +717,123 @@ app.post("/create-variant", async (req, res) => {
     });
   } catch (err) {
     console.error("❌ Error in /create-variant:", err.response?.data || err.message);
+    return res.status(500).json({
+      success: false,
+      error: "Internal Server Error",
+    });
+  }
+});
+
+// Sticker equivalent of /create-variant. Client sends the SELECTED option
+// VALUES only (never rates/prices) — this route looks up the product's real
+// sticker_config metaobject in Shopify and computes price server-side, so a
+// tampered client request can't change what gets charged.
+app.post("/create-sticker-variant", async (req, res) => {
+  try {
+    const {
+      product_id,
+      width,
+      height,
+      qty = 1,
+      designs = 1,
+      shape = "Square",
+      options = {},
+    } = req.body || {};
+
+    if (!product_id || !width || !height) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Missing width/height/product_id" });
+    }
+
+    const config = await fetchStickerConfig(product_id);
+    if (!config) {
+      return res
+        .status(404)
+        .json({ success: false, error: "No sticker_config found for this product" });
+    }
+
+    const isCustomShape = shape === "Custom";
+
+    const sqmRate =
+      findMatrixRate(config.rate_matrix, options.colour, options.finish) ??
+      findOptionRate(config.colour_options, options.colour) ??
+      findOptionRate(config.material_options, options.material) ??
+      findOptionRate(config.finish_options, options.finish) ??
+      (config.base_sqm_rate != null ? Number(config.base_sqm_rate) : null);
+
+    if (sqmRate == null) {
+      return res.status(500).json({
+        success: false,
+        error: "Could not resolve an SQM rate for this product/option combination",
+      });
+    }
+
+    const suppliedPricePercent = findOptionPercent(config.supplied_options, options.supplied) ?? 0;
+    const whiteInkAvailable = String(config.white_ink_available) === "true";
+    const whiteInkPricePercent =
+      whiteInkAvailable && config.white_ink_price_percent != null
+        ? Number(config.white_ink_price_percent) / 100
+        : 0;
+
+    const price = calculateStickerPrice({
+      width: toNumber(width),
+      height: toNumber(height),
+      qty: toNumber(qty, 1),
+      designs: toNumber(designs, 1),
+      isCustomShape,
+      sqmRate,
+      vatMultiplier: Number(config.vat_multiplier),
+      setupCharge: Number(config.setup_charge || 0),
+      customShapeSurchargePercent: Number(config.custom_shape_surcharge_percent || 0),
+      suppliedPricePercent,
+      whiteInkPricePercent,
+      whiteInkSelected: !!options.white_ink,
+    });
+
+    console.log("[/create-sticker-variant] Incoming:", {
+      product_id,
+      width,
+      height,
+      qty,
+      designs,
+      shape,
+      options,
+      resolvedSqmRate: sqmRate,
+    });
+    console.log("[/create-sticker-variant] Calculated price:", price);
+
+    const variant = await createStickerVariant(product_id, {
+      width: toNumber(width),
+      height: toNumber(height),
+      shape,
+      price,
+      configJson: {
+        width: toNumber(width),
+        height: toNumber(height),
+        qty: toNumber(qty, 1),
+        designs: toNumber(designs, 1),
+        shape,
+        options,
+        resolvedSqmRate: sqmRate,
+      },
+    });
+
+    if (!variant?.id) {
+      return res
+        .status(500)
+        .json({ success: false, error: "Failed to create sticker variant" });
+    }
+
+    return res.json({
+      success: true,
+      variant_id: variant.id,
+      price,
+      sku: variant.sku,
+      title: variant.title,
+    });
+  } catch (err) {
+    console.error("❌ Error in /create-sticker-variant:", err.response?.data || err.message);
     return res.status(500).json({
       success: false,
       error: "Internal Server Error",
