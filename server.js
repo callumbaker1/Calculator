@@ -288,8 +288,8 @@ function calculateStickerPrice({
   const h = toNumber(height);
   const shapeMultiplier = isCustomShape ? 1 + customShapeSurchargePercent / 100 : 1;
 
-  const form100 =
-    qty * (sqmRate * ((h + 2) * (w + 2) * 0.000001 + 0.005) + 15 + 6.95) * vatMultiplier * shapeMultiplier;
+  const sqmTerm = sqmRate * (h + 2) * (w + 2) * 0.000001 + 0.005;
+  const form100 = (qty * sqmTerm + 15 + 6.95) * vatMultiplier * shapeMultiplier;
 
   const qtyPrice = Math.ceil(form100);
   const priceBeforeExtras = qtyPrice + (toNumber(designs, 1) - 1);
