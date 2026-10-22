@@ -281,15 +281,26 @@ function calculateStickerPrice({
   suppliedPricePercent = 0,
   whiteInkPricePercent = 0,
   whiteInkSelected = false,
+  dieCutSurchargePercent = 0,
+  singlesSurchargePercent = 0,
+  pricingMode = "",
 }) {
   if (!qty || qty < 1) return 0;
 
   const w = toNumber(width);
   const h = toNumber(height);
+  // Stacks with the die-cut add-on below, as on the live material pages.
   const shapeMultiplier = isCustomShape ? 1 + customShapeSurchargePercent / 100 : 1;
 
   const sqmTerm = sqmRate * (h + 2) * (w + 2) * 0.000001 + 0.005;
   const form100 = (qty * sqmTerm + 15 + 6.95) * vatMultiplier * shapeMultiplier;
+
+  // Live roll labels page: rounded (not up), no per-design or other add-ons.
+  if (pricingMode === "roll") {
+    const rollTotal = Math.round(form100 + 2) + setupCharge;
+    console.log("[Sticker pricing] roll breakdown:", { width: w, height: h, qty, sqmRate, vatMultiplier, rollTotal });
+    return Number(rollTotal.toFixed(2));
+  }
 
   const qtyPrice = Math.ceil(form100);
   const priceBeforeExtras = qtyPrice + (toNumber(designs, 1) - 1);
@@ -298,12 +309,21 @@ function calculateStickerPrice({
     ? Math.ceil(priceBeforeExtras * suppliedPricePercent)
     : 0;
 
+  const dieCutAddon = dieCutSurchargePercent
+    ? Math.ceil(priceBeforeExtras * (dieCutSurchargePercent / 100))
+    : 0;
+
+  const singlesAddon = singlesSurchargePercent
+    ? Math.ceil(priceBeforeExtras * (singlesSurchargePercent / 100))
+    : 0;
+
   const whiteInkAddon =
     whiteInkSelected && whiteInkPricePercent
       ? Math.ceil(priceBeforeExtras * whiteInkPricePercent)
       : 0;
 
-  const finalTotal = priceBeforeExtras + suppliedAddon + setupCharge + whiteInkAddon + 2;
+  const finalTotal =
+    priceBeforeExtras + suppliedAddon + dieCutAddon + singlesAddon + setupCharge + whiteInkAddon + 2;
 
   console.log("[Sticker pricing] breakdown:", {
     width: w,
@@ -315,11 +335,73 @@ function calculateStickerPrice({
     vatMultiplier,
     setupCharge,
     suppliedAddon,
+    dieCutAddon,
+    singlesAddon,
     whiteInkAddon,
     finalTotal,
   });
 
   return Number(finalTotal.toFixed(2));
+}
+
+// The configurator's price for a custom-size sticker, resolved from the
+// product's sticker_config exactly like the theme's estimatePrice
+// (StickerConfig.liquid / cart-quick-edit.js / trade-quick-order.js) and the
+// live site's per-product CalcPrice. Returns { price, sqmRate } or null.
+function stickerPriceFromConfig(config, { width, height, qty, designs, isCustomShape, options = {} }) {
+  const sqmRate =
+    findMatrixRate(config.rate_matrix, options.colour || options.material, options.finish) ??
+    findOptionRate(config.colour_options, options.colour) ??
+    findOptionRate(config.material_options, options.material) ??
+    findOptionRate(config.finish_options, options.finish) ??
+    (config.base_sqm_rate != null ? Number(config.base_sqm_rate) : null);
+  if (sqmRate == null) return null;
+
+  const suppliedPricePercent = findOptionPercent(config.supplied_options, options.supplied) ?? 0;
+  const whiteInkAvailable = String(config.white_ink_available) === "true";
+  // White ink only where the product offers it for the chosen material
+  // (an empty list means every material), as the configurator enforces.
+  const whiteInkMaterials = parseList(config.white_ink_materials);
+  const whiteInkAllowed =
+    whiteInkAvailable && (!whiteInkMaterials.length || whiteInkMaterials.includes(options.material));
+  const whiteInkPricePercent =
+    whiteInkAllowed && config.white_ink_price_percent != null
+      ? Number(config.white_ink_price_percent) / 100
+      : 0;
+
+  // Per-option overrides: colour, then material, then finish, then the product.
+  const vatMultiplier =
+    findOptionNumber(config.colour_options, options.colour, "vat_multiplier_override") ??
+    findOptionNumber(config.material_options, options.material, "vat_multiplier_override") ??
+    findOptionNumber(config.finish_options, options.finish, "vat_multiplier_override") ??
+    Number(config.vat_multiplier);
+  const customShapeSurchargePercent =
+    findOptionNumber(config.material_options, options.material, "custom_shape_surcharge_override") ??
+    Number(config.custom_shape_surcharge_percent || 0);
+  const dieCutSurchargePercent =
+    findOptionNumber(config.material_options, options.material, "die_cut_surcharge_percent") ?? 0;
+  // Live material pages charge +15% for die-cut singles over sheets.
+  const singlesSurchargePercent =
+    options.supplied_format === "Singles" ? Number(config.singles_surcharge_percent || 0) : 0;
+
+  const price = calculateStickerPrice({
+    width,
+    height,
+    qty,
+    designs,
+    isCustomShape,
+    sqmRate,
+    vatMultiplier,
+    setupCharge: Number(config.setup_charge || 0),
+    customShapeSurchargePercent,
+    suppliedPricePercent,
+    whiteInkPricePercent,
+    whiteInkSelected: !!options.white_ink,
+    dieCutSurchargePercent,
+    singlesSurchargePercent,
+    pricingMode: String(config.pricing_mode || ""),
+  });
+  return { price, sqmRate };
 }
 
 // Pre-cut stock sizes (the Premium Paper page's "browse cheaper pre-cut
@@ -448,6 +530,18 @@ function findMatrixRate(matrix, colourValue, finishValue) {
     (m) => m.colour_value === colourValue && m.finish_value === finishValue
   );
   return match ? Number(match.sqm_rate) : null;
+}
+
+// A list field (e.g. white_ink_materials) arrives as a JSON string.
+function parseList(value) {
+  if (Array.isArray(value)) return value;
+  if (value == null || value === "") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [String(parsed)];
+  } catch (e) {
+    return [String(value)];
+  }
 }
 
 function findOptionPercent(options, value) {
@@ -833,28 +927,24 @@ app.post("/create-sticker-variant", async (req, res) => {
     }
 
     let sqmRate = null;
+    let custom = null;
     if (!precut) {
-      sqmRate =
-        findMatrixRate(config.rate_matrix, options.colour, options.finish) ??
-        findOptionRate(config.colour_options, options.colour) ??
-        findOptionRate(config.material_options, options.material) ??
-        findOptionRate(config.finish_options, options.finish) ??
-        (config.base_sqm_rate != null ? Number(config.base_sqm_rate) : null);
-
-      if (sqmRate == null) {
+      custom = stickerPriceFromConfig(config, {
+        width: toNumber(width),
+        height: toNumber(height),
+        qty: toNumber(qty, 1),
+        designs: toNumber(designs, 1),
+        isCustomShape,
+        options,
+      });
+      if (!custom) {
         return res.status(500).json({
           success: false,
           error: "Could not resolve an SQM rate for this product/option combination",
         });
       }
+      sqmRate = custom.sqmRate;
     }
-
-    const suppliedPricePercent = findOptionPercent(config.supplied_options, options.supplied) ?? 0;
-    const whiteInkAvailable = String(config.white_ink_available) === "true";
-    const whiteInkPricePercent =
-      whiteInkAvailable && config.white_ink_price_percent != null
-        ? Number(config.white_ink_price_percent) / 100
-        : 0;
 
     const effectiveWidth = precut ? precut.width : toNumber(width);
     const effectiveHeight = precut ? precut.height : toNumber(height);
@@ -867,20 +957,7 @@ app.post("/create-sticker-variant", async (req, res) => {
           perSheet: precut.perSheet,
           unitRate: precutUnitRate,
         })
-      : calculateStickerPrice({
-          width: effectiveWidth,
-          height: effectiveHeight,
-          qty: toNumber(qty, 1),
-          designs: toNumber(designs, 1),
-          isCustomShape,
-          sqmRate,
-          vatMultiplier: Number(config.vat_multiplier),
-          setupCharge: Number(config.setup_charge || 0),
-          customShapeSurchargePercent: Number(config.custom_shape_surcharge_percent || 0),
-          suppliedPricePercent,
-          whiteInkPricePercent,
-          whiteInkSelected: !!options.white_ink,
-        });
+      : custom.price;
 
     console.log("[/create-sticker-variant] Incoming:", {
       product_id,
