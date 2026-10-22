@@ -525,7 +525,7 @@ function findOptionRate(options, value) {
 // For products where the rate depends on TWO selections together (e.g. Paper
 // Foil: colour x finish) rather than a single option's own override.
 function findMatrixRate(matrix, colourValue, finishValue) {
-  if (!matrix || !colourValue || !finishValue) return null;
+  if (!Array.isArray(matrix) || !colourValue || !finishValue) return null;
   const match = matrix.find(
     (m) => m.colour_value === colourValue && m.finish_value === finishValue
   );
