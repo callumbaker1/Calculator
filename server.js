@@ -877,96 +877,122 @@ app.post("/create-variant", async (req, res) => {
 // VALUES only (never rates/prices) — this route looks up the product's real
 // sticker_config metaobject in Shopify and computes price server-side, so a
 // tampered client request can't change what gets charged.
+// Prices one custom-size or pre-cut sticker line from the product's
+// sticker_config. Shared by /create-sticker-variant (the site) and
+// /price-sticker (the trade API's quotes), so both always agree.
+// Returns { ok: true, ... } or { ok: false, status, error }.
+async function priceStickerRequest(body) {
+  const {
+    product_id,
+    width,
+    height,
+    qty = 1,
+    designs = 1,
+    shape = "Square",
+    options = {},
+  } = body || {};
+
+  if (!product_id || !width || !height) {
+    return { ok: false, status: 400, error: "Missing width/height/product_id" };
+  }
+
+  const config = await fetchStickerConfig(product_id);
+  if (!config) {
+    return { ok: false, status: 404, error: "No sticker_config found for this product" };
+  }
+
+  const isCustomShape = shape === "Custom";
+
+  // Pre-cut stock size (Premium Paper): the size's own dimensions and
+  // labels-per-sheet come from the product's config - never from the
+  // client - and it is priced with the pre-cut formula instead.
+  let precut = null;
+  let precutUnitRate = null;
+  if (options.precut) {
+    precut = parsePrecutSizes(config).find((p) => p.label === String(options.precut)) || null;
+    if (!precut) {
+      return { ok: false, status: 400, error: `Unknown pre-cut size '${options.precut}' for this product` };
+    }
+    precutUnitRate = findOptionNumber(config.finish_options, options.finish, "precut_unit_rate");
+    if (precutUnitRate == null) {
+      return { ok: false, status: 500, error: "No pre-cut unit rate is configured for the selected finish" };
+    }
+  }
+
+  let sqmRate = null;
+  let custom = null;
+  if (!precut) {
+    custom = stickerPriceFromConfig(config, {
+      width: toNumber(width),
+      height: toNumber(height),
+      qty: toNumber(qty, 1),
+      designs: toNumber(designs, 1),
+      isCustomShape,
+      options,
+    });
+    if (!custom) {
+      return { ok: false, status: 500, error: "Could not resolve an SQM rate for this product/option combination" };
+    }
+    sqmRate = custom.sqmRate;
+  }
+
+  const effectiveWidth = precut ? precut.width : toNumber(width);
+  const effectiveHeight = precut ? precut.height : toNumber(height);
+  const effectiveShape = precut ? precut.shape : shape;
+  const pricing = precut ? "precut" : "custom";
+
+  const price = precut
+    ? calculatePrecutPrice({
+        qty: toNumber(qty, 1),
+        perSheet: precut.perSheet,
+        unitRate: precutUnitRate,
+      })
+    : custom.price;
+
+  return {
+    ok: true,
+    product_id,
+    price,
+    pricing,
+    sqmRate,
+    precut,
+    precutUnitRate,
+    width: effectiveWidth,
+    height: effectiveHeight,
+    shape: effectiveShape,
+    qty: toNumber(qty, 1),
+    designs: toNumber(designs, 1),
+    options,
+  };
+}
+
+// Price only - creates nothing in Shopify. Used by the trade API for quotes.
+app.post("/price-sticker", async (req, res) => {
+  try {
+    const r = await priceStickerRequest(req.body);
+    if (!r.ok) return res.status(r.status).json({ success: false, error: r.error });
+    return res.json({
+      success: true,
+      price: r.price,
+      pricing: r.pricing,
+      width: r.width,
+      height: r.height,
+      shape: r.shape,
+    });
+  } catch (err) {
+    console.error("❌ Error in /price-sticker:", err.response?.data || err.message);
+    return res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
+
 app.post("/create-sticker-variant", async (req, res) => {
   try {
-    const {
-      product_id,
-      width,
-      height,
-      qty = 1,
-      designs = 1,
-      shape = "Square",
-      options = {},
-    } = req.body || {};
-
-    if (!product_id || !width || !height) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Missing width/height/product_id" });
-    }
-
-    const config = await fetchStickerConfig(product_id);
-    if (!config) {
-      return res
-        .status(404)
-        .json({ success: false, error: "No sticker_config found for this product" });
-    }
-
-    const isCustomShape = shape === "Custom";
-
-    // Pre-cut stock size (Premium Paper): the size's own dimensions and
-    // labels-per-sheet come from the product's config - never from the
-    // client - and it is priced with the pre-cut formula instead.
-    let precut = null;
-    let precutUnitRate = null;
-    if (options.precut) {
-      precut = parsePrecutSizes(config).find((p) => p.label === String(options.precut)) || null;
-      if (!precut) {
-        return res.status(400).json({
-          success: false,
-          error: `Unknown pre-cut size '${options.precut}' for this product`,
-        });
-      }
-      precutUnitRate = findOptionNumber(config.finish_options, options.finish, "precut_unit_rate");
-      if (precutUnitRate == null) {
-        return res.status(500).json({
-          success: false,
-          error: "No pre-cut unit rate is configured for the selected finish",
-        });
-      }
-    }
-
-    let sqmRate = null;
-    let custom = null;
-    if (!precut) {
-      custom = stickerPriceFromConfig(config, {
-        width: toNumber(width),
-        height: toNumber(height),
-        qty: toNumber(qty, 1),
-        designs: toNumber(designs, 1),
-        isCustomShape,
-        options,
-      });
-      if (!custom) {
-        return res.status(500).json({
-          success: false,
-          error: "Could not resolve an SQM rate for this product/option combination",
-        });
-      }
-      sqmRate = custom.sqmRate;
-    }
-
-    const effectiveWidth = precut ? precut.width : toNumber(width);
-    const effectiveHeight = precut ? precut.height : toNumber(height);
-    const effectiveShape = precut ? precut.shape : shape;
-    const pricing = precut ? "precut" : "custom";
-
-    const price = precut
-      ? calculatePrecutPrice({
-          qty: toNumber(qty, 1),
-          perSheet: precut.perSheet,
-          unitRate: precutUnitRate,
-        })
-      : custom.price;
+    const r = await priceStickerRequest(req.body);
+    if (!r.ok) return res.status(r.status).json({ success: false, error: r.error });
+    const { product_id, price, pricing, sqmRate, precut, precutUnitRate } = r;
 
     console.log("[/create-sticker-variant] Incoming:", {
-      product_id,
-      width,
-      height,
-      qty,
-      designs,
-      shape,
-      options,
+      ...req.body,
       pricing,
       resolvedSqmRate: sqmRate,
       precut,
@@ -974,17 +1000,17 @@ app.post("/create-sticker-variant", async (req, res) => {
     console.log("[/create-sticker-variant] Calculated price:", price);
 
     const variant = await createStickerVariant(product_id, {
-      width: effectiveWidth,
-      height: effectiveHeight,
-      shape: precut ? `${effectiveShape} Pre-cut` : effectiveShape,
+      width: r.width,
+      height: r.height,
+      shape: precut ? `${r.shape} Pre-cut` : r.shape,
       price,
       configJson: {
-        width: effectiveWidth,
-        height: effectiveHeight,
-        qty: toNumber(qty, 1),
-        designs: toNumber(designs, 1),
-        shape: effectiveShape,
-        options,
+        width: r.width,
+        height: r.height,
+        qty: r.qty,
+        designs: r.designs,
+        shape: r.shape,
+        options: r.options,
         pricing,
         resolvedSqmRate: sqmRate,
         precut: precut
