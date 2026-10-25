@@ -966,6 +966,32 @@ async function priceStickerRequest(body) {
   };
 }
 
+// The options a product can be ordered with (for the trade API's product
+// list): read from sticker_config like the pricing, rates left out.
+app.get("/sticker-options/:product_id", async (req, res) => {
+  try {
+    const config = await fetchStickerConfig(req.params.product_id);
+    if (!config) return res.status(404).json({ success: false, error: "No sticker_config found for this product" });
+    const opts = (list) => (Array.isArray(list) ? list : [])
+      .filter((o) => o && o.value)
+      .map((o) => ({ value: o.value, label: o.label || o.value }));
+    return res.json({
+      success: true,
+      shapes: parseList(config.shapes),
+      size_max_mm: config.size_max_mm != null ? Number(config.size_max_mm) : null,
+      finishes: opts(config.finish_options),
+      materials: opts(config.material_options),
+      colours: opts(config.colour_options),
+      adhesives: opts(config.adhesive_options),
+      white_ink: config.white_ink_available === "true" || config.white_ink_available === true,
+      pricing_mode: config.pricing_mode || null,
+    });
+  } catch (err) {
+    console.error("❌ Error in /sticker-options:", err.response?.data || err.message);
+    return res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
+
 // Price only - creates nothing in Shopify. Used by the trade API for quotes.
 app.post("/price-sticker", async (req, res) => {
   try {
